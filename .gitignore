@@ -1,0 +1,17 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editable/build metadata
+*.egg-info/
+build/
+dist/
+
+# Test/cache artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local logs/results
+*.log

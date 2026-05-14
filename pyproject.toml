@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-scheduler-policies"
+version = "0.0.1"
+description = "External scheduler policies for vLLM scheduler research"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Ativ" }
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vllm_scheduler_policies*"]
