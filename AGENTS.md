@@ -41,6 +41,19 @@ Relevant vLLM reference files, read-only unless explicitly instructed:
 - Do not disable FlashInfer as part of scheduler work.
 - Do not run broad test suites or long benchmarks unless explicitly asked.
 
+## Scheduler instrumentation design
+
+`InstrumentedSchedulerMixin.schedule()` is the outer template-method wrapper for scheduler timing and JSONL logging.
+
+Future policy classes should override `_schedule_impl()`, not `schedule()`.
+
+The default `_schedule_impl()` delegates to `super().schedule()`, preserving vLLM default scheduler behavior. Custom policies may either:
+
+- run policy-specific logic inside `_schedule_impl()` and then delegate to `super().schedule()`, or
+- fully implement `_schedule_impl()` and return a valid vLLM `SchedulerOutput`.
+
+Do not bypass `InstrumentedSchedulerMixin.schedule()` in instrumented policy classes, because doing so excludes custom policy work from `scheduler_wall_time_ms`.
+
 ## Environment rules
 
 Use the existing project environment:
