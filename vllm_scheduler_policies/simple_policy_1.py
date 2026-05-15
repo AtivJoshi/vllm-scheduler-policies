@@ -1,4 +1,4 @@
-"""Phase 9 instrumented passthrough scheduler.
+"""Phase 10.5 instrumented passthrough scheduler.
 
 This scheduler intentionally preserves vLLM's default scheduling behavior.
 It only adds lightweight per-scheduler-call JSONL instrumentation via
@@ -15,4 +15,7 @@ from vllm_scheduler_policies.instrumentation import InstrumentedSchedulerMixin
 
 
 class SimplePolicy1Scheduler(InstrumentedSchedulerMixin, Scheduler):
-    """Behavior-preserving scheduler with Phase 9 JSONL instrumentation."""
+    """Behavior-preserving scheduler with template-method instrumentation.
+
+    Future policy classes should override _schedule_impl(), not schedule().
+    """

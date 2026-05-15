@@ -1,6 +1,6 @@
 """Lightweight scheduler instrumentation helpers.
 
-Phase 9 goal:
+Phase 10.5 goal:
 - preserve vLLM default scheduler behavior
 - measure Python scheduler wall time with time.perf_counter()
 - emit one JSONL record per scheduler call when enabled by environment variable
@@ -34,15 +34,19 @@ def _safe_len(obj: Any) -> int | None:
 
 
 class InstrumentedSchedulerMixin:
-    """Mixin that wraps Scheduler.schedule() with lightweight JSONL logging.
+    """Mixin that wraps scheduler execution with lightweight JSONL logging.
 
     This mixin must appear before vLLM's Scheduler in the subclass MRO:
 
         class MyScheduler(InstrumentedSchedulerMixin, Scheduler):
             pass
 
-    It intentionally delegates scheduling to super().schedule() without changing
-    queue order, token budgets, KV-cache allocation, preemption, or outputs.
+    schedule() is the outer instrumentation wrapper. Future policy classes
+    should override _schedule_impl(), not schedule().
+
+    The default _schedule_impl() delegates scheduling to super().schedule()
+    without changing queue order, token budgets, KV-cache allocation,
+    preemption, or outputs.
     """
 
     def _instrumentation_init_once(self) -> None:
@@ -104,7 +108,7 @@ class InstrumentedSchedulerMixin:
         error_message = None
 
         try:
-            output = super().schedule()
+            output = self._schedule_impl()
             return output
         except BaseException as exc:
             error_type = type(exc).__name__
@@ -155,3 +159,10 @@ class InstrumentedSchedulerMixin:
                 record["error_message"] = error_message
 
             self._instrumentation_write(record)
+
+    def _schedule_impl(self):  # noqa: ANN201 - keep exact vLLM scheduler return
+        """Run scheduler logic inside the instrumentation wrapper.
+
+        Future policy classes should override _schedule_impl(), not schedule().
+        """
+        return super().schedule()
