@@ -12,7 +12,8 @@ Primal Heuristic 1: Approximation via LP Relaxation
 ```
 
 This file is documentation only. It does not implement or modify scheduler
-behavior.
+behavior. Phase 12.1 extended these notes with read-only vLLM scheduler
+inspection results.
 
 ## Scope decision
 
@@ -57,6 +58,20 @@ U_t = all requests currently present in the system, except requests that have
 This includes waiting, partially-prefilled, running/decode-ready, and
 preemptible requests.
 
+Phase 12.1 verified the concrete containers:
+
+- `Scheduler.waiting` and `Scheduler.skipped_waiting` are `RequestQueue`
+  instances,
+
+- `Scheduler.running` is `list[Request]`,
+
+- partial prefill is represented by `Request` progress, especially
+  `num_computed_tokens`,
+
+- `Request.request_id` is the stable key,
+
+- `Request.arrival_time` is available.
+
 ### Utility weights
 
 The utility weights are inputs to the relaxed LP.
@@ -97,28 +112,51 @@ or a lexicographic objective.
 
 ### Memory model
 
-For the first complete-algorithm implementation target:
+Phase 12.1 resolved the vLLM integration memory unit:
 
-- use per-token memory,
+- use KV-cache blocks inside the LP, not bytes and not raw per-token memory,
 
-- ignore block/page allocations,
+- map `M_t_free` to
+  `self.kv_cache_manager.block_pool.get_num_free_blocks()`,
 
-- ignore KV block rounding effects.
+- map `W_t` to a scheduler-local conservative reserve named
+  `lp_memory_reserve_blocks`,
 
+- do not treat `gpu_memory_utilization` as `W_t`.
 
-This is a deliberate modeling simplification.
+`gpu_memory_utilization` helps determine total KV-cache capacity before
+scheduling. `lp_memory_reserve_blocks` is an additional scheduler-local reserve
+inside the LP planning problem.
+
+For the LP:
+
+- `c_i^P` should be a conservative estimate of incremental KV blocks needed
+  for the candidate prefill chunk,
+
+- `c_i^D` should be a conservative estimate of incremental KV blocks needed
+  for one decode step,
+
+- `c_i^Z` should be the currently allocated KV blocks recoverable by
+  recomputation preemption.
+
+The LP memory constraint remains a planning approximation. Final vLLM action
+translation must still call `allocate_slots()` or the native allocation path
+and handle allocation failure safely. The LP solution is not proof of actual
+KV feasibility.
 
 ### Memory capacity and safety watermark
 
 Use:
 
 ```text
-M_t_free = current available KV-cache capacity
-W_t      = vLLM memory safety margin / watermark
+M_t_free = current free KV-cache blocks
+W_t      = lp_memory_reserve_blocks
 ```
 
-If vLLM exposes an internal safety margin, use it. Otherwise, introduce a
-policy-level conservative watermark.
+No generic scheduler memory watermark was found beyond
+`scheduler_reserve_full_isl`, which is an admission safety check. Introduce
+`lp_memory_reserve_blocks` as a policy-level conservative reserve for LP
+planning.
 
 ### Sequence budget
 
@@ -128,7 +166,13 @@ Use:
 S_max = max_num_seqs
 ```
 
-Exact config access path must be verified before implementation.
+Phase 12.1 verified that this maps to `self.max_num_running_reqs` /
+`scheduler_config.max_num_seqs` semantics.
+
+Do not add a separate `max_num_partial_prefills` LP constraint in the first
+implementation. The inspected `schedule()` path visibly uses token budget and
+`long_prefill_token_threshold`; `max_num_partial_prefills` was not clearly
+enforced there. Revisit it later after the first LP path is stable.
 
 ### Token budget
 
@@ -138,7 +182,28 @@ Use:
 B_max = vLLM per-step token budget
 ```
 
-Exact scheduler-budget object/field must be verified before implementation.
+Phase 12.1 verified this maps to `self.max_num_scheduled_tokens`.
+
+### Decode readiness
+
+There is no explicit decode-ready field in the inspected scheduler path.
+
+Decode eligibility must be derived by a future helper:
+
+```text
+_classify_request_action_space()
+```
+
+That helper should use request status, `num_computed_tokens`,
+`num_prompt_tokens`, the native `request.num_tokens` /
+`request.num_tokens_with_spec` scheduled-work formula, and simple generative
+request assumptions.
+
+A naive `P_i_rem == 0` rule is insufficient for vLLM. For the first
+implementation, support only simple generative requests. Speculative decoding,
+async placeholders, pooling, KV transfer edge cases, multimodal encoder
+complications, and other advanced states should be unsupported on the LP path
+initially and should trigger fallback/delegation.
 
 ### Preemption model
 
@@ -184,7 +249,19 @@ This requires verifying:
 - what `Scheduler.schedule()` returns in vLLM v0.20.2.
 
 
-No method names should be invented before code inspection.
+Phase 12.1 resolved that `_translate_lp_actions()` remains the highest-risk
+integration step. LP action plans cannot be returned directly as scheduler
+outputs.
+
+A valid `SchedulerOutput` must match native vLLM construction, including
+`scheduled_new_reqs`, `scheduled_cached_reqs`, `num_scheduled_tokens`, block
+IDs, connector metadata, zeroing IDs, finished/preempted request IDs, and
+post-schedule state updates.
+
+Future implementation should first produce an internal `LPActionPlan` and
+synthetic tests, then a dry-run scheduler that logs the LP plan while
+delegating to default behavior. Real action translation should come after that.
+Real preemption should come last.
 
 ### 2. Preemption is high-risk
 
@@ -205,16 +282,19 @@ Future implementation must ensure that preemption preserves:
 - compatibility with vLLM's expected scheduler output.
 
 
-The first LP scheduler should not implement swap-based preemption.
+The first LP scheduler should not implement swap-based preemption. Phase 12.1
+verified the recomputation path as `_preempt_request(request, timestamp)`, with
+the native caller responsible for removing the request from `running` before
+calling it.
 
 ### 3. Memory accounting is approximate
 
-The first implementation target uses per-token memory and ignores block/page
-allocation.
+The first implementation target uses block-count planning and still simplifies
+the true vLLM allocator behavior.
 
 This simplification may be mathematically useful but can disagree with vLLM's
 actual KV allocation behavior. The future implementation must retain vLLM's
-real memory-safety checks or fail safely if the scalar model over-admits.
+real memory-safety checks or fail safely if the block model over-admits.
 
 ### 4. Solver latency may be too high
 
@@ -276,46 +356,63 @@ three appear, possible explanations include:
 
 The default-like utility formulas use `t_i_arrive`.
 
-If vLLM does not expose a suitable arrival timestamp or arrival order, the
-future scheduler may need to maintain first-seen metadata keyed by request ID.
+Phase 12.1 verified that vLLM exposes `Request.arrival_time`. Policy-maintained
+first-seen metadata may still be useful for scheduler-iteration age, but it is
+not required just to obtain an arrival timestamp.
 
 That metadata must not alter request behavior.
 
+### 8. Safe fallback is required
+
+If the LP path sees unsupported request states, solver failure, allocation
+failure, or uncertain action translation, it should fail safely.
+
+The first integrated LP scheduler should delegate to default scheduling rather
+than corrupt scheduler state.
+
 ## Items to inspect before implementation
 
-Before coding the LP scheduler, inspect the vLLM v0.20.2 scheduler path for:
+Phase 12.1 verified:
 
-1. waiting request container,
+1. waiting request container: `Scheduler.waiting` and
+   `Scheduler.skipped_waiting`,
 
-2. running request container,
+2. running request container: `Scheduler.running`,
 
-3. partially-prefilled request representation,
+3. partially-prefilled request representation: `Request.num_computed_tokens`
+   progress,
 
-4. finished request removal path,
+4. request ID / stable key: `Request.request_id`,
 
-5. request ID / stable key,
+5. arrival timestamp: `Request.arrival_time`,
 
-6. arrival timestamp or arrival order,
+6. token-budget object: `self.max_num_scheduled_tokens`,
 
-7. prompt length and prompt-progress fields,
+7. `max_num_seqs` path: `self.max_num_running_reqs` /
+   `scheduler_config.max_num_seqs`,
 
-8. decode-ready condition,
+8. KV-cache free-capacity API:
+   `self.kv_cache_manager.block_pool.get_num_free_blocks()`,
 
-9. token-budget object and exact units,
+9. per-request KV allocation state: KV manager block mappings/helpers,
 
-10. `max_num_seqs` config access,
+10. recomputation preemption path: `_preempt_request(request, timestamp)`,
 
-11. KV-cache free-capacity API,
+11. chunked-prefill length controls: `num_new_tokens`, token budget,
+    `long_prefill_token_threshold`, model length, encoder constraints, and
+    alignment,
 
-12. memory safety margin / watermark,
+12. scheduler output type and invariants: `SchedulerOutput`.
 
-13. per-request KV allocation state,
+Remaining design items:
 
-14. recomputation preemption path,
+- conservative decode classification for advanced states,
 
-15. chunked-prefill length selection,
+- block-cost estimation without mutating scheduler state,
 
-16. scheduler output type and invariants.
+- action translation that preserves every native `SchedulerOutput` invariant,
+
+- safe allocation-failure behavior.
 
 
 ## Future implementation decomposition
@@ -326,11 +423,14 @@ Possible decomposition:
 
 ```text
 _collect_lp_state()
+_classify_request_action_space()
 _compute_utility_weights()
+_estimate_kv_block_costs()
 _build_lp()
 _solve_lp()
 _partition_integral_fractional()
 _extract_fractionals()
+_build_lp_action_plan()
 _translate_lp_actions()
 _log_lp_metrics()
 ```
@@ -351,18 +451,15 @@ InstrumentedSchedulerMixin.schedule()
 
 Before implementation, define a safe fallback for LP failure.
 
-Potential fallback choices:
+Resolved fallback for the first integrated LP scheduler:
 
-1. delegate to default vLLM scheduler behavior,
+1. delegate to default vLLM scheduler behavior through the template-method
+   fallback when the LP path is unsupported or unsafe,
 
-2. delegate to `super().schedule()` through the template-method fallback,
+2. log the fallback reason in scheduler-policy instrumentation,
 
-3. return no new admissions but preserve running decode behavior,
-
-4. fail closed with a clear diagnostic in development mode.
-
-
-The fallback choice should be decided before writing scheduler code.
+3. do not return partial hand-built outputs unless action translation is known
+   to be complete.
 
 ## Validation notes for later phases
 
@@ -378,17 +475,24 @@ When implementation begins, validate in this order:
 
 5. synthetic `ExtractFractionals` test,
 
-6. no-vLLM dry-run action-plan test,
+6. no-vLLM `LPActionPlan` test,
 
-7. server startup with `--scheduler-cls`,
+7. dry-run scheduler that logs the LP plan while delegating to default
+   behavior,
 
-8. one `/v1/chat/completions` request,
+8. real action translation without preemption,
 
-9. tiny benchmark,
+9. real recomputation preemption,
 
-10. JSONL inspection,
+10. server startup with `--scheduler-cls`,
 
-11. comparison against default, passthrough, and `SimplePolicy1Scheduler`.
+11. one `/v1/chat/completions` request,
+
+12. tiny benchmark,
+
+13. JSONL inspection,
+
+14. comparison against default, passthrough, and `SimplePolicy1Scheduler`.
 
 
 Do not run long benchmarks until basic correctness and safety are established.

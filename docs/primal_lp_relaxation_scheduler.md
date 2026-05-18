@@ -17,8 +17,8 @@ that section, including:
 - preemption-first memory recovery
 - admission and fluid chunking
 
-This document is not an implementation. Phase 11 is documentation and
-specification only.
+This document is not an implementation. Phase 11 and Phase 12.1 are
+documentation and specification only.
 
 ## Intended future scheduler class
 
@@ -95,8 +95,19 @@ Therefore `U_t` includes, where applicable:
 - requests that are eligible for preemption.
 
 
-The future implementation must verify the exact vLLM scheduler data structures
-that contain these request states.
+Phase 12.1 verified the relevant vLLM scheduler containers:
+
+- `Scheduler.waiting` and `Scheduler.skipped_waiting` are `RequestQueue`
+  instances,
+
+- `Scheduler.running` is `list[Request]`,
+
+- partial prefill is represented by request progress, especially
+  `Request.num_computed_tokens`, rather than by a separate request type,
+
+- `Request.request_id` is the stable request key,
+
+- `Request.arrival_time` is available for age-based weights.
 
 ## Mathematical decision variables
 
@@ -178,7 +189,7 @@ sum_i (x_i(t) + y_i(t)) <= B_max
 Implementation interpretation:
 
 ```text
-B_max maps to vLLM's per-step token budget.
+B_max maps to self.max_num_scheduled_tokens.
 ```
 
 This should correspond to the budget controlling how many total prefill and
@@ -193,10 +204,15 @@ sum_i (I_i^P(t) + y_i(t)) <= S_max
 Implementation interpretation:
 
 ```text
-S_max maps to max_num_seqs.
+S_max maps to self.max_num_running_reqs / scheduler_config.max_num_seqs
+semantics.
 ```
 
 This limits how many request/sequence actions can be scheduled in the step.
+Do not add a separate `max_num_partial_prefills` LP constraint in the first
+implementation. The inspected scheduler path visibly uses token budget and
+`long_prefill_token_threshold`, while `max_num_partial_prefills` was not
+clearly enforced there. Revisit this later.
 
 ### Memory budget
 
@@ -205,15 +221,43 @@ sum_i (c_i^P x_i(t) + c_i^D y_i(t) - c_i^Z z_i(t))
     <= M_t_free - W_t
 ```
 
-Implementation interpretation:
+Implementation interpretation after Phase 12.1:
 
 ```text
-M_t_free = current available KV-cache capacity
-W_t      = vLLM memory safety margin / watermark, if available
+M_t_free = current free KV-cache blocks
+W_t      = scheduler-local conservative reserve in KV-cache blocks
 ```
 
-For the first complete-algorithm implementation target, use a per-token memory
-model and ignore block/page rounding.
+For vLLM integration, the LP memory unit should be KV-cache blocks, not bytes
+or raw per-token memory. `M_t_free` maps to:
+
+```text
+self.kv_cache_manager.block_pool.get_num_free_blocks()
+```
+
+`W_t` should be implemented as a scheduler-local conservative reserve named:
+
+```text
+lp_memory_reserve_blocks
+```
+
+`gpu_memory_utilization` is not `W_t`. It helps determine total KV-cache
+capacity before scheduling. `lp_memory_reserve_blocks` is an additional
+scheduler-local reserve inside the LP planning problem.
+
+The LP memory coefficients should be conservative block estimates:
+
+- `c_i^P`: incremental KV blocks needed for the candidate prefill chunk,
+
+- `c_i^D`: incremental KV blocks needed for one decode step,
+
+- `c_i^Z`: currently allocated KV blocks recoverable by recomputation
+  preemption.
+
+The LP memory constraint is only a planning approximation. Final vLLM action
+translation must still use `allocate_slots()` or the native allocation path and
+must handle allocation failure safely. The LP solution must not be presented as
+proof of actual KV feasibility.
 
 ### Chunked prefill
 
@@ -241,7 +285,24 @@ y_i(t) <= 1{P_i_rem(t) = 0}
 
 Implementation interpretation:
 
-A request may decode only after its prompt has been fully prefilled.
+There is no explicit decode-ready field in the inspected vLLM scheduler path.
+A naive `P_i_rem(t) == 0` rule is insufficient.
+
+Future code should introduce a helper named:
+
+```text
+_classify_request_action_space()
+```
+
+This helper should derive decode eligibility from request status,
+`num_computed_tokens`, `num_prompt_tokens`, the native scheduled-work formula
+based on `request.num_tokens` / `request.num_tokens_with_spec`, and simple
+generative-request assumptions.
+
+For the first integrated LP path, support only simple generative requests.
+Speculative decoding, async placeholders, pooling, KV-transfer edge cases,
+multimodal encoder complications, and other advanced states should be treated
+as unsupported and should trigger fallback/delegation to default scheduling.
 
 ### Mutual exclusion
 
@@ -301,14 +362,14 @@ For each request, derive or approximate:
 |Quantity|Meaning|
 |---|---|
 |`P_i_rem(t)`|remaining un-prefilled prompt tokens|
-|`c_i^P`|memory consumed per prefill token|
-|`c_i^D`|memory consumed by one decode token|
-|`c_i^Z`|memory recovered if the request is preempted|
+|`c_i^P`|incremental KV blocks needed for a candidate prefill chunk|
+|`c_i^D`|incremental KV blocks needed for one decode step|
+|`c_i^Z`|allocated KV blocks recoverable if the request is preempted|
 |`alpha_i(t)`|decode utility|
 |`beta_i(t)`|prefill utility|
 |`gamma_i(t)`|preemption penalty|
 |arrival time / age|used by default-like utility weights|
-|prefill-complete flag|used for decode causality|
+|action-space classification|used for prefill/decode/preemption eligibility|
 |preemptible flag|used to decide whether `z_i` may be nonzero|
 
 Also collect global capacities:
@@ -316,9 +377,9 @@ Also collect global capacities:
 |Quantity|Implementation meaning|
 |---|---|
 |`B_max`|vLLM per-step token budget|
-|`S_max`|`max_num_seqs`|
-|`M_t_free`|current available KV-cache capacity|
-|`W_t`|memory safety watermark|
+|`S_max`|`self.max_num_running_reqs` / `scheduler_config.max_num_seqs` semantics|
+|`M_t_free`|current free KV-cache blocks|
+|`W_t`|scheduler-local `lp_memory_reserve_blocks`|
 |`C_max`|maximum prefill chunk size|
 
 ### 2. Build the relaxed LP
@@ -346,7 +407,7 @@ tilde_I_i^P
 ```
 
 The solver output is the continuous relaxation, not yet a valid vLLM action
-plan.
+plan and not a valid `SchedulerOutput`.
 
 ### 4. Partition integral and fractional requests
 
@@ -391,7 +452,7 @@ B_rem = B_max - sum_{i in U_int} (hat_x_i + hat_y_i)
 
 S_rem = S_max - sum_{i in U_int} (hat_I_i^P + hat_y_i)
 
-M_rem = (M_t_free - W_t)
+M_rem = (M_t_free - lp_memory_reserve_blocks)
         - sum_{i in U_int}
           (c_i^P * hat_x_i + c_i^D * hat_y_i - c_i^Z * hat_z_i)
 ```
@@ -468,7 +529,8 @@ if hat_x_i > 0:
 ```
 
 This is the fluid chunking rule. It permits the final prefill chunk to be
-truncated to fit the remaining token and memory budgets.
+truncated to fit the remaining token and planning-memory budgets. The actual
+vLLM allocation path may still reject the planned chunk.
 
 ## Translation from LP actions to vLLM scheduling actions
 
@@ -490,8 +552,31 @@ The implementation must translate them to vLLM actions:
 |`hat_z_i = 1`|preempt/delete request `i`; assume recomputation later, no swapping|
 |all zero|do not schedule request `i` in this step|
 
-The exact vLLM methods and fields for action translation must be verified
-before coding. Do not invent method names in the implementation.
+Phase 12.1 verified that action translation is the highest-risk integration
+step. LP action plans cannot be returned directly as scheduler outputs.
+
+A valid `SchedulerOutput` must match native vLLM construction, including:
+
+- `scheduled_new_reqs`,
+
+- `scheduled_cached_reqs`,
+
+- `num_scheduled_tokens`,
+
+- block IDs,
+
+- connector metadata,
+
+- zeroing IDs,
+
+- finished/preempted request IDs,
+
+- post-schedule state updates.
+
+Future implementation should first produce an internal `LPActionPlan` and
+synthetic tests, then a dry-run scheduler path that logs the LP plan while
+delegating to default behavior. Real action translation should come later, and
+real preemption should come last.
 
 ## Preemption model
 
@@ -504,21 +589,25 @@ where the request may later be admitted again and its KV state must be rebuilt.
 
 ## Memory model
 
-For the first complete-algorithm implementation target:
+For the first complete-algorithm implementation target in vLLM:
 
-- use per-token memory,
+- use KV-cache blocks as the LP memory unit,
 
-- ignore block/page allocation effects,
+- treat bytes and raw per-token memory as the wrong integration unit,
 
-- treat `c_i^P`, `c_i^D`, and `c_i^Z` as scalar memory coefficients,
+- treat `c_i^P`, `c_i^D`, and `c_i^Z` as conservative scalar block
+  coefficients,
 
-- map `M_t_free` to available KV-cache capacity,
+- map `M_t_free` to
+  `self.kv_cache_manager.block_pool.get_num_free_blocks()`,
 
-- map `W_t` to vLLM's memory safety margin if one is available.
+- map `W_t` to scheduler-local `lp_memory_reserve_blocks`.
 
 
-This is a deliberate approximation. Later implementations may replace this
-with block-aware accounting.
+This is still an approximation. vLLM's true allocation feasibility is
+block-manager state dependent and must be enforced by the native allocation
+path. `allocate_slots()` returning `None` must trigger safe fallback or a
+smaller translated action, not state corruption.
 
 ## Default vLLM behavior to preserve where possible
 
@@ -544,6 +633,11 @@ The future implementation must preserve:
 - server compatibility with `--scheduler-cls`,
 
 - no modification of native vLLM scheduler files unless explicitly approved.
+
+If the LP path sees unsupported request states, solver failure, allocation
+failure, or uncertain action translation, the first integrated LP scheduler
+should fail safely by delegating to default scheduling rather than corrupting
+scheduler state.
 
 
 The scheduler package's current instrumentation environment variable remains:
@@ -619,9 +713,16 @@ Phase 11 does not include:
 
 The first implementation attempt should still avoid:
 
-- block/page-aware memory accounting,
+- byte-level or raw per-token memory accounting,
+
+- relying on the LP result as proof of actual KV feasibility,
 
 - swapping-based preemption,
+
+- speculative decoding, async placeholders, pooling, KV-transfer edge cases,
+  and multimodal encoder edge cases on the LP path,
+
+- adding a separate `max_num_partial_prefills` LP constraint,
 
 - multi-step lookahead optimization,
 
@@ -646,17 +747,22 @@ When implementation begins in a later phase, validate progressively:
 
 4. unit-style fractional extraction test,
 
-5. action translation dry-run test if feasible,
+5. `LPActionPlan` test on synthetic requests,
 
-6. server startup with `--scheduler-cls`,
+6. dry-run scheduler that logs the LP plan while delegating to default
+   behavior,
 
-7. one curl request,
+7. action translation dry-run test if feasible,
 
-8. tiny benchmark,
+8. server startup with `--scheduler-cls`,
 
-9. scheduler JSONL inspection,
+9. one curl request,
 
-10. comparison against:
+10. tiny benchmark,
+
+11. scheduler JSONL inspection,
+
+12. comparison against:
 
     - default vLLM scheduler,
 
