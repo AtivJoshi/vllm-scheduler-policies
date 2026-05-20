@@ -10,6 +10,21 @@ This package contains external scheduler classes for a vLLM scheduler research p
 
 The current goal is incremental, reproducible scheduler experimentation for vLLM v0.20.2. The first custom scheduler must preserve default vLLM scheduling behavior unless a task explicitly says otherwise.
 
+## Engineering principles
+
+This is a research codebase. Optimize for correctness, reproducibility, and clarity for future researchers.
+
+- Prefer the simplest implementation that solves the current research problem.
+- Make minimal, localized changes. Avoid unrelated refactors.
+- Prefer existing project patterns over introducing new abstractions.
+- Write explicit, readable code with clear names and straightforward control flow.
+- Do not add dependencies unless they are necessary for the current task and justified.
+- Do not optimize for performance until correctness is established and a bottleneck is measured.
+- Document intent, assumptions, and non-obvious research decisions; do not comment obvious mechanics.
+- Do not silently change scientific meaning, metrics, evaluation protocols, scheduling semantics, or experiment parameters.
+- Keep generated artifacts, caches, checkpoints, logs, and results separate from source code.
+- Do not fabricate experimental results, benchmark numbers, logs, citations, or file contents.
+
 ## Relevant files
 
 Primary external package files:
@@ -67,7 +82,7 @@ Do not use system `python3`, bare `pip`, or global installs.
 
 Avoid shell patterns that have caused remote instability, especially: `set -euo pipefail`
 
-## First Codex tasks must be read-only
+## Initial tasks must be read-only
 
 For initial inspection tasks:
 
@@ -87,3 +102,12 @@ Prefer targeted smoke checks: `~/vllm-sched/.venv/bin/python -c "import vllm_sch
 For server/benchmark checks, use the existing launcher scripts and save outputs under `~/vllm-sched/results/`.
 
 Do not benchmark on login nodes.
+
+For changes that affect algorithms, scheduler behavior, experiments, or measurements:
+
+- Add or update only targeted tests that clarify intended behavior or prevent realistic regressions.
+- Do not hard-code behavior merely to satisfy tests while violating the intended algorithm.
+- Run the most relevant validation available after changes.
+- If validation cannot be run because tools, dependencies, GPUs, datasets, or environment variables are missing, report exactly what could not be run and why.
+- Do not claim validation succeeded unless it actually ran.
+- Include the exact command that should be run in a correctly configured environment.
