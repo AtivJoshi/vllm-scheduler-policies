@@ -107,9 +107,11 @@ record.md
 - `primal_lp_dry_run`:
   `vllm_scheduler_policies.primal_lp_dry_run.PrimalLPDryRunScheduler`
 
-Current `scripts/serve.sh` maps `default`, `passthrough`, and
-`simple_policy_1`. Until `primal_lp_dry_run` is added to the script map, pass
-its class path through the extra vLLM arguments after `--`.
+Current `scripts/serve.sh` has built-in mappings for `default`, `passthrough`,
+and `simple_policy_1`; `scripts/scheduler_lib.sh` also contains historical
+placeholder aliases that should not be used unless implemented and validated.
+Until `primal_lp_dry_run` is added to the script map, pass its class path through
+the extra vLLM arguments after `--`.
 
 ## 6. Starting a Server Safely
 
