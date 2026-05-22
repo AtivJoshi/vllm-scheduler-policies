@@ -62,9 +62,13 @@ Relevant vLLM reference files, read-only unless explicitly instructed:
 
 Future policy classes should override `_schedule_impl()`, not `schedule()`.
 
-The default `_schedule_impl()` delegates to `super().schedule()`, preserving vLLM default scheduler behavior. Custom policies may either:
+The default `InstrumentedSchedulerMixin._schedule_impl()` delegates to `super().schedule()`, preserving vLLM default scheduler behavior. This is safe only inside the mixin's own method, where `super()` reaches native vLLM `Scheduler`.
 
-- run policy-specific logic inside `_schedule_impl()` and then delegate to `super().schedule()`, or
+Custom policy subclasses such as `class MyScheduler(InstrumentedSchedulerMixin, Scheduler)` must not call `super().schedule()` from their own `_schedule_impl()` overrides, because that re-enters `InstrumentedSchedulerMixin.schedule()` and recursively calls `self._schedule_impl()`.
+
+Custom policies may either:
+
+- run policy-specific logic inside `_schedule_impl()` and then delegate to native/default scheduling with `Scheduler.schedule(self)` or a local helper that does exactly that, or
 - fully implement `_schedule_impl()` and return a valid vLLM `SchedulerOutput`.
 
 Do not bypass `InstrumentedSchedulerMixin.schedule()` in instrumented policy classes, because doing so excludes custom policy work from `scheduler_wall_time_ms`.
