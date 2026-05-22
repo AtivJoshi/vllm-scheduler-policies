@@ -1,5 +1,7 @@
 # Phase 12 Report: Primal LP Relaxation Scheduler Implementation Planning
 
+Pending sanitization: this report should not be treated as canonical until replaced by `docs/project_status.md` and a concise Phase 12 summary.
+
 ## Context
 
 Phase 12 begins after the Phase 11 documentation commit:
