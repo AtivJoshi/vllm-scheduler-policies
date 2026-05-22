@@ -6,20 +6,43 @@ the read-only Unity-local artifact audit.
 
 ## Repository State
 
-Observed by read-only Unity-local audit:
+### Unity-local Audited Runtime Baseline
 
 - vLLM repo:
   - branch: `unity-phase4-v0.20.2-cu130`
   - commit: `bc150f50299199599673614f80d12a196f377655`
-  - status: clean
+  - status: clean at audit time
 - scheduler package:
   - branch: `master`
-  - commit: `169a86289b26d1dc508a88ab74a1616fd0716f15`
-  - status: clean
-  - latest commits observed:
+  - commit observed during read-only Unity-local audit:
+    `169a86289b26d1dc508a88ab74a1616fd0716f15`
+  - status: clean at audit time
+  - latest scheduler commits observed during audit:
     - `169a862 documentation updates`
     - `405c574 Clarify scheduler delegation guidance`
     - `d4a0796 Add primal LP dry-run scheduler bridge`
+
+### Current Documentation Cleanup State
+
+Documentation cleanup baseline observed from GitHub before this status update:
+
+- `b884102a88e0a9f9001b9a7c773fa20de2ff21c3`
+- message: `Archive superseded documentation`
+
+Documentation cleanup commits verified locally in `git log --oneline -10`:
+
+- `d04ba5a Add project status documentation`
+- `07456af Add scheduler experiment reference`
+- `55b0bbd Clarify scheduler experiment reference aliases`
+- `2f91931 phase_12_report updated`
+- `4ac5d8f phase_12_report updated`
+- `8c8cb80 Update agent documentation guidance`
+- `b884102 Archive superseded documentation`
+
+Superseded phase-specific docs have been moved to `docs/archive/` and are
+historical. Canonical docs remain in `docs/project_status.md`,
+`docs/scheduler_experiment_reference.md`, `docs/phase_12_report.md`, and
+`docs/primal_lp_relaxation_scheduler.md`.
 
 ## Environment Baseline
 
@@ -140,14 +163,16 @@ Real action translation remains future work and is high-risk.
 Repo docs report that Phase 12.3/12.4b targeted tests passed.
 
 The read-only Unity-local audit found no independent `logs`, `results`, or
-`tmp` artifacts corroborating Phase 12.3/12.4 validation outside the repo docs.
+`tmp` artifacts corroborating Phase 12.3/12.4b validation outside the repo docs.
 
-External evidence for Phase 12.3/12.4 validation is therefore unknown.
+External evidence for Phase 12.3/12.4b validation is therefore unknown.
 
 ## Next Recommended Phase
 
-1. D1/D2 doc consolidation first.
-2. Then create `docs/scheduler_experiment_reference.md`.
-3. Then sanitize the Phase 12 report.
-4. Only after docs are canonical, run a Phase 12.4c/12.5 server experiment to
-   measure dry-run LP overhead before attempting real action translation.
+1. Run final documentation validation grep checks.
+2. Optionally update or rename `docs/primal_lp_relaxation_scheduler.md` into a
+   final `docs/primal_lp_scheduler_design.md`.
+3. Run a Phase 12.4c/12.5 server experiment for `PrimalLPDryRunScheduler` to
+   measure dry-run LP overhead before real action translation.
+4. Do not attempt real action translation until dry-run overhead, fallback
+   behavior, and JSONL diagnostics are validated.
