@@ -148,7 +148,7 @@ linprog(method="highs")
 
 The formulation includes these variables:
 
-- `x_i`: prefill/admission amount
+- `x_i`: prefill token amount
 - `y_i`: decode action
 - `z_i`: preemption action
 - `I_i^P`: prefill indicator
