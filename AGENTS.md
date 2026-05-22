@@ -33,9 +33,23 @@ Primary external package files:
 - `vllm_scheduler_policies/simple_policy_1.py`
 - `vllm_scheduler_policies/instrumentation.py`
 - `vllm_scheduler_policies/common.py`
+- `vllm_scheduler_policies/primal_lp_dry_run.py`
+- `vllm_scheduler_policies/primal_lp/types.py`
+- `vllm_scheduler_policies/primal_lp/solver.py`
+- `vllm_scheduler_policies/primal_lp/extraction.py`
+- `vllm_scheduler_policies/primal_lp/weights.py`
 - `scripts/serve.sh`
 - `scripts/bench.sh`
 - `pyproject.toml`
+
+Canonical docs:
+
+- `docs/project_status.md` — concise current-state source of truth
+- `docs/scheduler_experiment_reference.md` — operational Unity experiment guide
+- `docs/phase_12_report.md` — concise Phase 12 summary
+- `docs/primal_lp_relaxation_scheduler.md` — current LP design bridge until replaced/renamed
+
+Phase-specific planning files and old prompt/report files should be treated as historical unless they are explicitly listed as canonical.
 
 Relevant vLLM reference files, read-only unless explicitly instructed:
 
@@ -54,6 +68,8 @@ Relevant vLLM reference files, read-only unless explicitly instructed:
 - Do not use or introduce the old `VLLM_SCHEDULER_ITER_LOG` environment variable.
 - Use `SCHEDULER_POLICIES_ITER_LOG` for scheduler JSONL instrumentation.
 - Do not disable FlashInfer as part of scheduler work.
+- `LPActionPlan` is not a valid vLLM `SchedulerOutput`.
+- `PrimalLPDryRunScheduler` is diagnostic only and must return native scheduler output unchanged unless a future task explicitly asks to change scheduling behavior.
 - Do not run broad test suites or long benchmarks unless explicitly asked.
 
 ## Scheduler instrumentation design
@@ -102,6 +118,13 @@ Only edit files after the human explicitly asks for an implementation patch.
 ## Validation preference
 
 Prefer targeted smoke checks: `~/vllm-sched/.venv/bin/python -c "import vllm_scheduler_policies; print('ok')"`
+
+For documentation-only patches, prefer:
+
+- `git diff --check`
+- `git diff --stat`
+- `git status --short`
+- targeted grep checks for stale env vars and scheduler delegation hazards.
 
 For server/benchmark checks, use the existing launcher scripts and save outputs under `~/vllm-sched/results/`.
 
