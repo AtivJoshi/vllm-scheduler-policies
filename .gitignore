@@ -15,3 +15,6 @@ dist/
 
 # Local logs/results
 *.log
+
+# Claude Transcripts
+claude_transcript/*
