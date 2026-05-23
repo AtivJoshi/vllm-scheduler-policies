@@ -93,7 +93,7 @@ Do not bypass `InstrumentedSchedulerMixin.schedule()` in instrumented policy cla
 
 Use the existing project environment:
 ```bash
-    source ~/vllm-sched/docs/unity_cuda_13_1_env.sh
+    source ~/vllm-sched/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh
     source ~/vllm-sched/.venv/bin/activate
 ```
 Use the project Python: `~/vllm-sched/.venv/bin/python`

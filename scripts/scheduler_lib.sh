@@ -18,8 +18,8 @@ phase8_bootstrap_env() {
   local ws
   ws="${VLLM_SCHED_WORKSPACE:-$(phase8_workspace_root)}"
 
-  if [ -f "${ws}/docs/unity_cuda_13_1_env.sh" ]; then
-    source "${ws}/docs/unity_cuda_13_1_env.sh"
+  if [ -f "${ws}/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh" ]; then
+    source "${ws}/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh"
   fi
 
   if [ -f "${ws}/.venv/bin/activate" ]; then

@@ -1,6 +1,6 @@
 # Source this inside a Unity GPU allocation before CUDA/JIT/vLLM work.
 # Usage:
-#   source ~/vllm-sched/docs/unity_cuda_13_1_env.sh
+#   source ~/vllm-sched/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh
 
 module load cuda/13.1
 

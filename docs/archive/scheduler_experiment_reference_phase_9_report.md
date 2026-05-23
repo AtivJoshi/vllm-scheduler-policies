@@ -30,7 +30,7 @@ virtualenv:
   ~/vllm-sched/.venv
 
 CUDA setup:
-  source ~/vllm-sched/docs/unity_cuda_13_1_env.sh
+  source ~/vllm-sched/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh
 
 vLLM branch:
   unity-phase4-v0.20.2-cu130
@@ -173,7 +173,7 @@ Start from a Unity shell on the allocated node:
 ```bash
 cd ~/vllm-sched
 
-source ~/vllm-sched/docs/unity_cuda_13_1_env.sh
+source ~/vllm-sched/vllm-scheduler-policies/scripts/unity_cuda_13_1_env.sh
 source ~/vllm-sched/.venv/bin/activate
 
 hostname
