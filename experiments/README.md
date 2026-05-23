@@ -49,7 +49,7 @@ experiments/
 
 `experiments/common/` should contain small reusable helper scripts.
 
-Each experiment directory should contain its own purpose, protocol, configs,  
+Each experiment directory should contain its own purpose, protocol, configs,
 scripts, curated summaries, and gitignored raw runs.
 
 ## Artifact policy
@@ -57,32 +57,32 @@ scripts, curated summaries, and gitignored raw runs.
 Tracked by default:
 
 - experiment README files;
-    
+
 - reusable helper scripts;
-    
+
 - small configuration files;
-    
+
 - analysis and record-generation code;
-    
+
 - curated summaries in `summaries/`.
-    
+
 
 Ignored by default:
 
 - raw run directories;
-    
-- `*.log`;
-    
-- `*.jsonl`;
-    
-- `*.pid`;
-    
-- transient health-check and response files;
-    
-- server and benchmark stdout/stderr captures.
-    
 
-A raw run directory should be self-describing enough for local inspection. A  
+- `*.log`;
+
+- `*.jsonl`;
+
+- `*.pid`;
+
+- transient health-check and response files;
+
+- server and benchmark stdout/stderr captures.
+
+
+A raw run directory should be self-describing enough for local inspection. A
 typical run may contain:
 
 ```text
@@ -99,23 +99,23 @@ analysis.txt
 record.md
 ```
 
-Only compact curated summaries should be copied into tracked `summaries/`  
+Only compact curated summaries should be copied into tracked `summaries/`
 files.
 
 ## Measurement discipline
 
-`SCHEDULER_POLICIES_ITER_LOG` is the scheduler JSONL logging environment  
+`SCHEDULER_POLICIES_ITER_LOG` is the scheduler JSONL logging environment
 variable.
 
 `VLLM_SCHEDULER_ITER_LOG` must not be used for new experiments.
 
-When comparing `PrimalLPDryRunScheduler` against `simple_policy_1`, the dry-run  
-scheduler returns native scheduler output unchanged. Therefore, unless a  
-dedicated LP-specific timing field exists, the measured quantity is total  
-dry-run scheduler overhead via `scheduler_wall_time_ms`, not isolated LP solver  
+When comparing `PrimalLPDryRunScheduler` against `simple_policy_1`, the dry-run
+scheduler returns native scheduler output unchanged. Therefore, unless a
+dedicated LP-specific timing field exists, the measured quantity is total
+dry-run scheduler overhead via `scheduler_wall_time_ms`, not isolated LP solver
 time.
 
-Any generated summary must state whether LP-specific timing is available and  
+Any generated summary must state whether LP-specific timing is available and
 which timing field was used.
 
 ## Unity safety rules
@@ -124,13 +124,13 @@ Do not run vLLM server or benchmark jobs on login nodes.
 
 Do not use `set -euo pipefail` in Unity remote commands for this project.
 
-Do not kill arbitrary Python, vLLM, or engine processes from generic process  
-searches. Stop only the server recorded by the current run's pid file unless a  
+Do not kill arbitrary Python, vLLM, or engine processes from generic process
+searches. Stop only the server recorded by the current run's pid file unless a
 human has inspected the situation and decided otherwise.
 
 ## Agent usage rules
 
-Codex CLI or Claude CLI may help create or refactor experiment harness files,  
+Codex CLI or Claude CLI may help create or refactor experiment harness files,
 docs, configs, and analysis scripts.
 
 They should not autonomously broaden benchmark matrices.
