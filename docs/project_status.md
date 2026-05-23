@@ -167,12 +167,27 @@ The read-only Unity-local audit found no independent `logs`, `results`, or
 
 External evidence for Phase 12.3/12.4b validation is therefore unknown.
 
-## Next Recommended Phase
+## Phase 13 Direction: Experiment Management Workflow
 
-1. Run final documentation validation grep checks.
-2. Optionally update or rename `docs/primal_lp_relaxation_scheduler.md` into a
-   final `docs/primal_lp_scheduler_design.md`.
-3. Run a Phase 12.4c/12.5 server experiment for `PrimalLPDryRunScheduler` to
-   measure dry-run LP overhead before real action translation.
-4. Do not attempt real action translation until dry-run overhead, fallback
-   behavior, and JSONL diagnostics are validated.
+Phase 13 is a workflow and reproducibility phase.
+
+The immediate goal is to stop relying on copy-pasted mega-scripts and to move
+future experiment protocol, helper scripts, configs, and curated summaries into
+tracked repository paths under `experiments/`.
+
+Phase 13 should keep raw run artifacts inside the repository tree for easy local
+navigation, but raw artifacts should be ignored by Git by default. Examples
+include server logs, benchmark logs, scheduler JSONL files, pid files, transient
+health-check output, and per-run scratch files.
+
+The initial experiment-management design is documented in
+`experiments/README.md`.
+
+Phase 13 should not change scheduler behavior, implement real LP action
+translation, or broaden benchmark coverage beyond small harness-validation runs
+unless a later phase explicitly chooses to do so.
+
+For `PrimalLPDryRunScheduler` overhead measurements, summaries must distinguish
+between total dry-run scheduler overhead and isolated LP solver time. Unless a
+dedicated LP-specific timing field exists, the measured timing field is
+`scheduler_wall_time_ms`.
