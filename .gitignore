@@ -18,3 +18,20 @@ dist/
 
 # Claude Transcripts
 claude_transcript/*
+
+# Experiment raw artifacts
+experiments/**/runs/*
+!experiments/**/runs/.gitkeep
+experiments/**/tmp/*
+!experiments/**/tmp/.gitkeep
+
+# Experiment logs and transient outputs
+experiments/**/*.jsonl
+experiments/**/*.pid
+experiments/**/server_stdout*
+experiments/**/server_stderr*
+experiments/**/bench_stdout*
+experiments/**/bench_stderr*
+experiments/**/health.txt
+experiments/**/single_chat_response.json
+experiments/**/manifest.local.json
