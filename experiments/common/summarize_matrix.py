@@ -1,13 +1,46 @@
 #!/usr/bin/env python3
-"""Summarize a Phase 13 LP dry-run overhead matrix directory."""
+"""Summarize an LP dry-run overhead matrix directory.
+
+The summary combines:
+- benchmark-level metrics parsed from bench_*.log;
+- scheduler JSONL analysis metrics from analysis.json;
+- grouped comparisons between simple_policy_1 and primal_lp_dry_run.
+
+This script is intentionally dependency-free.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 from pathlib import Path
 from typing import Any
+
+
+BENCH_NUMERIC_KEYS = (
+    "Successful requests",
+    "Failed requests",
+    "Request throughput (req/s)",
+    "Output token throughput (tok/s)",
+    "Total Token throughput (tok/s)",
+    "Mean TTFT (ms)",
+    "Median TTFT (ms)",
+    "P99 TTFT (ms)",
+    "Mean TPOT (ms)",
+    "Median TPOT (ms)",
+    "P99 TPOT (ms)",
+    "Mean ITL (ms)",
+    "Median ITL (ms)",
+    "P99 ITL (ms)",
+    "Mean E2EL (ms)",
+    "Median E2EL (ms)",
+    "P99 E2EL (ms)",
+)
+
+COMPARISON_BASELINE = "simple_policy_1"
+COMPARISON_TREATMENT = "primal_lp_dry_run"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -21,50 +54,256 @@ def _parse_cell_name(name: str) -> tuple[str, str]:
     return scheduler, seed
 
 
-def _bench_metrics(cell_dir: Path) -> dict[str, str]:
-    logs = sorted(cell_dir.glob("bench_*.log"))
-    if not logs:
-        return {}
-
-    metrics: dict[str, str] = {}
-    for line in logs[0].read_text(encoding="utf-8", errors="replace").splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if key in {
-            "Successful requests",
-            "Failed requests",
-            "Request throughput (req/s)",
-            "Mean TTFT (ms)",
-            "Mean TPOT (ms)",
-        }:
-            metrics[key] = value
-    return metrics
-
-
 def _float_or_none(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        value_f = float(value)
+        return value_f if math.isfinite(value_f) else None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # vLLM benchmark values are usually plain numbers, but tolerate commas.
+    text = text.replace(",", "")
     try:
-        return float(str(value))
+        value_f = float(text)
     except ValueError:
         return None
+    return value_f if math.isfinite(value_f) else None
 
 
-def _mean(values: list[float]) -> float | None:
-    if not values:
+def _bench_metrics(cell_dir: Path) -> dict[str, float]:
+    """Parse known numeric benchmark metrics from the first bench_*.log file."""
+    logs = sorted(cell_dir.glob("bench_*.log"))
+    if not logs:
+        return {}
+
+    metrics: dict[str, float] = {}
+    for line in logs[0].read_text(encoding="utf-8", errors="replace").splitlines():
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value_f = _float_or_none(value)
+
+        if key in BENCH_NUMERIC_KEYS and value_f is not None:
+            metrics[key] = value_f
+
+    return metrics
+
+
+def _numeric_list(values: list[Any]) -> list[float]:
+    out: list[float] = []
+    for value in values:
+        value_f = _float_or_none(value)
+        if value_f is not None:
+            out.append(value_f)
+    return out
+
+
+def _mean(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if not xs:
         return None
-    return statistics.fmean(values)
+    return statistics.fmean(xs)
 
 
-def _format_float(value: float | None) -> str:
-    if value is None:
+def _median(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if not xs:
+        return None
+    return statistics.median(xs)
+
+
+def _sample_stdev(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if len(xs) < 2:
+        return None
+    return statistics.stdev(xs)
+
+
+def _min(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if not xs:
+        return None
+    return min(xs)
+
+
+def _max(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if not xs:
+        return None
+    return max(xs)
+
+
+def _sum(values: list[Any]) -> float | None:
+    xs = _numeric_list(values)
+    if not xs:
+        return None
+    return sum(xs)
+
+
+def _format_float(value: Any) -> str:
+    value_f = _float_or_none(value)
+    if value_f is None:
         return "null"
-    return f"{value:.6g}"
+    return f"{value_f:.6g}"
+
+
+def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    numerator_f = _float_or_none(numerator)
+    denominator_f = _float_or_none(denominator)
+    if numerator_f is None or denominator_f is None or denominator_f == 0:
+        return None
+    return numerator_f / denominator_f
+
+
+def _metric_stats(cells: list[dict[str, Any]], key: str) -> dict[str, float | None]:
+    values = [cell.get(key) for cell in cells]
+    return {
+        "mean": _mean(values),
+        "median": _median(values),
+        "stdev": _sample_stdev(values),
+        "min": _min(values),
+        "max": _max(values),
+    }
+
+
+def _metric_summary_for_scheduler(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    failed_requests = [cell.get("failed_requests") for cell in cells]
+
+    return {
+        "num_cells": len(cells),
+        "seeds": [cell["seed"] for cell in cells],
+        "all_scheduler_calls_ok": all(
+            cell.get("all_scheduler_calls_ok") is True for cell in cells
+        ),
+        "total_failed_requests": _sum(failed_requests),
+        "successful_requests": _metric_stats(cells, "successful_requests"),
+        "request_throughput_req_s": _metric_stats(
+            cells, "request_throughput_req_s"
+        ),
+        "output_token_throughput_tok_s": _metric_stats(
+            cells, "output_token_throughput_tok_s"
+        ),
+        "total_token_throughput_tok_s": _metric_stats(
+            cells, "total_token_throughput_tok_s"
+        ),
+        "mean_ttft_ms": _metric_stats(cells, "mean_ttft_ms"),
+        "median_ttft_ms": _metric_stats(cells, "median_ttft_ms"),
+        "p99_ttft_ms": _metric_stats(cells, "p99_ttft_ms"),
+        "mean_tpot_ms": _metric_stats(cells, "mean_tpot_ms"),
+        "median_tpot_ms": _metric_stats(cells, "median_tpot_ms"),
+        "p99_tpot_ms": _metric_stats(cells, "p99_tpot_ms"),
+        "mean_itl_ms": _metric_stats(cells, "mean_itl_ms"),
+        "median_itl_ms": _metric_stats(cells, "median_itl_ms"),
+        "p99_itl_ms": _metric_stats(cells, "p99_itl_ms"),
+        "mean_e2el_ms": _metric_stats(cells, "mean_e2el_ms"),
+        "median_e2el_ms": _metric_stats(cells, "median_e2el_ms"),
+        "p99_e2el_ms": _metric_stats(cells, "p99_e2el_ms"),
+        "scheduler_wall_time_ms_mean": _metric_stats(
+            cells, "scheduler_wall_time_ms_mean"
+        ),
+        "scheduler_wall_time_ms_median": _metric_stats(
+            cells, "scheduler_wall_time_ms_median"
+        ),
+        "scheduler_wall_time_ms_p95": _metric_stats(
+            cells, "scheduler_wall_time_ms_p95"
+        ),
+        "scheduler_wall_time_ms_max": _metric_stats(
+            cells, "scheduler_wall_time_ms_max"
+        ),
+        "scheduler_wall_time_ms_sum": _metric_stats(
+            cells, "scheduler_wall_time_ms_sum"
+        ),
+        "num_scheduler_call_records": _metric_stats(
+            cells, "num_scheduler_call_records"
+        ),
+        "num_lp_dry_run_records": _metric_stats(cells, "num_lp_dry_run_records"),
+        "total_scheduled_tokens": _metric_stats(cells, "total_scheduled_tokens"),
+        "total_preemptions": _metric_stats(cells, "total_preemptions"),
+        "lp_specific_timing_available_any": any(
+            cell.get("lp_specific_timing_available") is True for cell in cells
+        ),
+        "overhead_metric_used": sorted(
+            {str(cell.get("overhead_metric_used")) for cell in cells}
+        ),
+    }
+
+
+def _comparison_from_groups(grouped: dict[str, Any]) -> dict[str, Any]:
+    baseline = grouped.get(COMPARISON_BASELINE)
+    treatment = grouped.get(COMPARISON_TREATMENT)
+    if baseline is None or treatment is None:
+        return {}
+
+    comparison: dict[str, Any] = {}
+
+    metric_paths = {
+        "scheduler_wall_time_ms_mean": (
+            baseline["scheduler_wall_time_ms_mean"]["mean"],
+            treatment["scheduler_wall_time_ms_mean"]["mean"],
+        ),
+        "scheduler_wall_time_ms_p95": (
+            baseline["scheduler_wall_time_ms_p95"]["mean"],
+            treatment["scheduler_wall_time_ms_p95"]["mean"],
+        ),
+        "scheduler_wall_time_ms_sum": (
+            baseline["scheduler_wall_time_ms_sum"]["mean"],
+            treatment["scheduler_wall_time_ms_sum"]["mean"],
+        ),
+        "mean_tpot_ms": (
+            baseline["mean_tpot_ms"]["mean"],
+            treatment["mean_tpot_ms"]["mean"],
+        ),
+        "median_tpot_ms": (
+            baseline["median_tpot_ms"]["mean"],
+            treatment["median_tpot_ms"]["mean"],
+        ),
+        "p99_tpot_ms": (
+            baseline["p99_tpot_ms"]["mean"],
+            treatment["p99_tpot_ms"]["mean"],
+        ),
+        "mean_ttft_ms": (
+            baseline["mean_ttft_ms"]["mean"],
+            treatment["mean_ttft_ms"]["mean"],
+        ),
+        "request_throughput_req_s": (
+            baseline["request_throughput_req_s"]["mean"],
+            treatment["request_throughput_req_s"]["mean"],
+        ),
+        "output_token_throughput_tok_s": (
+            baseline["output_token_throughput_tok_s"]["mean"],
+            treatment["output_token_throughput_tok_s"]["mean"],
+        ),
+        "total_token_throughput_tok_s": (
+            baseline["total_token_throughput_tok_s"]["mean"],
+            treatment["total_token_throughput_tok_s"]["mean"],
+        ),
+    }
+
+    for metric, (baseline_value, treatment_value) in metric_paths.items():
+        baseline_f = _float_or_none(baseline_value)
+        treatment_f = _float_or_none(treatment_value)
+        if baseline_f is None or treatment_f is None:
+            continue
+
+        comparison[f"{metric}_baseline_mean"] = baseline_f
+        comparison[f"{metric}_treatment_mean"] = treatment_f
+        comparison[f"{metric}_delta"] = treatment_f - baseline_f
+        comparison[f"{metric}_ratio"] = _safe_ratio(treatment_f, baseline_f)
+
+    scheduler_delta = comparison.get("scheduler_wall_time_ms_mean_delta")
+    tpot_delta = comparison.get("mean_tpot_ms_delta")
+    if scheduler_delta is not None and tpot_delta is not None:
+        comparison["mean_tpot_delta_per_scheduler_mean_delta"] = _safe_ratio(
+            tpot_delta, scheduler_delta
+        )
+
+    return comparison
 
 
 def summarize(matrix_root: Path) -> dict[str, Any]:
@@ -80,19 +319,39 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
         wall = analysis.get("scheduler_wall_time_ms", {})
         bench = _bench_metrics(cell_dir)
 
+        wall_mean = _float_or_none(wall.get("mean"))
+        scheduler_calls = _float_or_none(analysis.get("num_scheduler_call_records"))
+        wall_sum = (
+            wall_mean * scheduler_calls
+            if wall_mean is not None and scheduler_calls is not None
+            else None
+        )
+
         cell = {
             "cell": cell_dir.name,
             "scheduler": scheduler,
             "seed": seed,
-            "successful_requests": _float_or_none(
-                bench.get("Successful requests")
+            "successful_requests": bench.get("Successful requests"),
+            "failed_requests": bench.get("Failed requests"),
+            "request_throughput_req_s": bench.get("Request throughput (req/s)"),
+            "output_token_throughput_tok_s": bench.get(
+                "Output token throughput (tok/s)"
             ),
-            "failed_requests": _float_or_none(bench.get("Failed requests")),
-            "request_throughput_req_s": _float_or_none(
-                bench.get("Request throughput (req/s)")
+            "total_token_throughput_tok_s": bench.get(
+                "Total Token throughput (tok/s)"
             ),
-            "mean_ttft_ms": _float_or_none(bench.get("Mean TTFT (ms)")),
-            "mean_tpot_ms": _float_or_none(bench.get("Mean TPOT (ms)")),
+            "mean_ttft_ms": bench.get("Mean TTFT (ms)"),
+            "median_ttft_ms": bench.get("Median TTFT (ms)"),
+            "p99_ttft_ms": bench.get("P99 TTFT (ms)"),
+            "mean_tpot_ms": bench.get("Mean TPOT (ms)"),
+            "median_tpot_ms": bench.get("Median TPOT (ms)"),
+            "p99_tpot_ms": bench.get("P99 TPOT (ms)"),
+            "mean_itl_ms": bench.get("Mean ITL (ms)"),
+            "median_itl_ms": bench.get("Median ITL (ms)"),
+            "p99_itl_ms": bench.get("P99 ITL (ms)"),
+            "mean_e2el_ms": bench.get("Mean E2EL (ms)"),
+            "median_e2el_ms": bench.get("Median E2EL (ms)"),
+            "p99_e2el_ms": bench.get("P99 E2EL (ms)"),
             "num_records_total": analysis.get("num_records_total"),
             "num_scheduler_call_records": analysis.get(
                 "num_scheduler_call_records"
@@ -103,6 +362,7 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
             "scheduler_wall_time_ms_median": wall.get("median"),
             "scheduler_wall_time_ms_p95": wall.get("p95"),
             "scheduler_wall_time_ms_max": wall.get("max"),
+            "scheduler_wall_time_ms_sum": wall_sum,
             "total_scheduled_tokens": analysis.get("total_scheduled_tokens"),
             "total_preemptions": analysis.get("total_preemptions"),
             "lp_specific_timing_available": analysis.get(
@@ -110,68 +370,24 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
             ),
             "overhead_metric_used": analysis.get("overhead_metric_used"),
             "lp_fallback_counts": analysis.get("lp_fallback_counts"),
+            "lp_unsupported_reason_counts": analysis.get(
+                "lp_unsupported_reason_counts"
+            ),
+            "lp_solver_success_counts": analysis.get("lp_solver_success_counts"),
             "lp_error_type_counts": analysis.get("lp_error_type_counts"),
         }
         cells.append(cell)
 
-    by_scheduler: dict[str, list[dict[str, Any]]] = {}
+    by_scheduler_cells: dict[str, list[dict[str, Any]]] = {}
     for cell in cells:
-        by_scheduler.setdefault(str(cell["scheduler"]), []).append(cell)
+        by_scheduler_cells.setdefault(str(cell["scheduler"]), []).append(cell)
 
-    grouped: dict[str, Any] = {}
-    for scheduler, scheduler_cells in sorted(by_scheduler.items()):
-        wall_means = [
-            float(c["scheduler_wall_time_ms_mean"])
-            for c in scheduler_cells
-            if c.get("scheduler_wall_time_ms_mean") is not None
-        ]
-        wall_p95s = [
-            float(c["scheduler_wall_time_ms_p95"])
-            for c in scheduler_cells
-            if c.get("scheduler_wall_time_ms_p95") is not None
-        ]
-        throughputs = [
-            float(c["request_throughput_req_s"])
-            for c in scheduler_cells
-            if c.get("request_throughput_req_s") is not None
-        ]
-        failed_requests = [
-            float(c["failed_requests"])
-            for c in scheduler_cells
-            if c.get("failed_requests") is not None
-        ]
+    grouped = {
+        scheduler: _metric_summary_for_scheduler(scheduler_cells)
+        for scheduler, scheduler_cells in sorted(by_scheduler_cells.items())
+    }
 
-        grouped[scheduler] = {
-            "num_cells": len(scheduler_cells),
-            "seeds": [c["seed"] for c in scheduler_cells],
-            "all_scheduler_calls_ok": all(
-                c.get("all_scheduler_calls_ok") is True for c in scheduler_cells
-            ),
-            "total_failed_requests": sum(failed_requests)
-            if failed_requests
-            else None,
-            "mean_of_scheduler_wall_time_ms_mean": _mean(wall_means),
-            "mean_of_scheduler_wall_time_ms_p95": _mean(wall_p95s),
-            "mean_request_throughput_req_s": _mean(throughputs),
-            "lp_specific_timing_available_any": any(
-                c.get("lp_specific_timing_available") is True
-                for c in scheduler_cells
-            ),
-            "overhead_metric_used": sorted(
-                {str(c.get("overhead_metric_used")) for c in scheduler_cells}
-            ),
-        }
-
-    comparison: dict[str, Any] = {}
-    baseline = grouped.get("simple_policy_1", {})
-    lp = grouped.get("primal_lp_dry_run", {})
-    baseline_mean = baseline.get("mean_of_scheduler_wall_time_ms_mean")
-    lp_mean = lp.get("mean_of_scheduler_wall_time_ms_mean")
-    if isinstance(baseline_mean, (int, float)) and isinstance(lp_mean, (int, float)):
-        comparison["mean_wall_time_delta_ms"] = lp_mean - baseline_mean
-        comparison["mean_wall_time_ratio"] = (
-            lp_mean / baseline_mean if baseline_mean != 0 else None
-        )
+    comparison = _comparison_from_groups(grouped)
 
     return {
         "matrix_root": str(matrix_root),
@@ -187,6 +403,16 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
     }
 
 
+def _stats_inline(stats: dict[str, Any]) -> str:
+    return (
+        f"mean={_format_float(stats.get('mean'))}, "
+        f"median={_format_float(stats.get('median'))}, "
+        f"stdev={_format_float(stats.get('stdev'))}, "
+        f"min={_format_float(stats.get('min'))}, "
+        f"max={_format_float(stats.get('max'))}"
+    )
+
+
 def format_text(summary: dict[str, Any]) -> str:
     lines = [
         "=== matrix summary ===",
@@ -194,7 +420,12 @@ def format_text(summary: dict[str, Any]) -> str:
         f"num_cells={summary['num_cells']}",
         f"measurement_caveat={summary['measurement_caveat']}",
         "",
-        "cell,scheduler,seed,success,failed,throughput,wall_mean_ms,wall_p95_ms,wall_max_ms,scheduler_calls,lp_records",
+        (
+            "cell,scheduler,seed,success,failed,req_throughput,"
+            "mean_ttft_ms,mean_tpot_ms,median_tpot_ms,p99_tpot_ms,"
+            "wall_mean_ms,wall_p95_ms,wall_sum_ms,wall_max_ms,"
+            "scheduler_calls,lp_records"
+        ),
     ]
 
     for cell in summary["cells"]:
@@ -207,8 +438,13 @@ def format_text(summary: dict[str, Any]) -> str:
                     _format_float(cell["successful_requests"]),
                     _format_float(cell["failed_requests"]),
                     _format_float(cell["request_throughput_req_s"]),
+                    _format_float(cell["mean_ttft_ms"]),
+                    _format_float(cell["mean_tpot_ms"]),
+                    _format_float(cell["median_tpot_ms"]),
+                    _format_float(cell["p99_tpot_ms"]),
                     _format_float(cell["scheduler_wall_time_ms_mean"]),
                     _format_float(cell["scheduler_wall_time_ms_p95"]),
+                    _format_float(cell["scheduler_wall_time_ms_sum"]),
                     _format_float(cell["scheduler_wall_time_ms_max"]),
                     str(cell["num_scheduler_call_records"]),
                     str(cell["num_lp_dry_run_records"]),
@@ -225,12 +461,32 @@ def format_text(summary: dict[str, Any]) -> str:
                 f"  seeds={group['seeds']}",
                 f"  all_scheduler_calls_ok={group['all_scheduler_calls_ok']}",
                 f"  total_failed_requests={_format_float(group['total_failed_requests'])}",
-                "  mean_of_scheduler_wall_time_ms_mean="
-                f"{_format_float(group['mean_of_scheduler_wall_time_ms_mean'])}",
-                "  mean_of_scheduler_wall_time_ms_p95="
-                f"{_format_float(group['mean_of_scheduler_wall_time_ms_p95'])}",
-                "  mean_request_throughput_req_s="
-                f"{_format_float(group['mean_request_throughput_req_s'])}",
+                f"  successful_requests: {_stats_inline(group['successful_requests'])}",
+                "  request_throughput_req_s: "
+                f"{_stats_inline(group['request_throughput_req_s'])}",
+                "  output_token_throughput_tok_s: "
+                f"{_stats_inline(group['output_token_throughput_tok_s'])}",
+                "  total_token_throughput_tok_s: "
+                f"{_stats_inline(group['total_token_throughput_tok_s'])}",
+                f"  mean_ttft_ms: {_stats_inline(group['mean_ttft_ms'])}",
+                f"  median_ttft_ms: {_stats_inline(group['median_ttft_ms'])}",
+                f"  p99_ttft_ms: {_stats_inline(group['p99_ttft_ms'])}",
+                f"  mean_tpot_ms: {_stats_inline(group['mean_tpot_ms'])}",
+                f"  median_tpot_ms: {_stats_inline(group['median_tpot_ms'])}",
+                f"  p99_tpot_ms: {_stats_inline(group['p99_tpot_ms'])}",
+                f"  mean_itl_ms: {_stats_inline(group['mean_itl_ms'])}",
+                f"  median_itl_ms: {_stats_inline(group['median_itl_ms'])}",
+                f"  p99_itl_ms: {_stats_inline(group['p99_itl_ms'])}",
+                "  scheduler_wall_time_ms_mean: "
+                f"{_stats_inline(group['scheduler_wall_time_ms_mean'])}",
+                "  scheduler_wall_time_ms_p95: "
+                f"{_stats_inline(group['scheduler_wall_time_ms_p95'])}",
+                "  scheduler_wall_time_ms_sum: "
+                f"{_stats_inline(group['scheduler_wall_time_ms_sum'])}",
+                "  num_scheduler_call_records: "
+                f"{_stats_inline(group['num_scheduler_call_records'])}",
+                "  num_lp_dry_run_records: "
+                f"{_stats_inline(group['num_lp_dry_run_records'])}",
                 "  lp_specific_timing_available_any="
                 f"{group['lp_specific_timing_available_any']}",
                 f"  overhead_metric_used={group['overhead_metric_used']}",
@@ -238,7 +494,7 @@ def format_text(summary: dict[str, Any]) -> str:
         )
 
     lines.extend(["", "=== comparison ==="])
-    for key, value in summary["comparison"].items():
+    for key, value in sorted(summary["comparison"].items()):
         lines.append(f"{key}={_format_float(value)}")
 
     return "\n".join(lines) + "\n"
