@@ -117,8 +117,7 @@ def build_record(run_dir: Path, title: str) -> str:
             "server.pid",
             "scheduler_iter.jsonl",
             "analysis.json",
-            "analysis.txt",
-            "record.md",
+            "analysis.txt"
         ],
     )
 
