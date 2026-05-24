@@ -41,6 +41,9 @@ phase8_scheduler_class() {
     simple_policy_1)
       printf '%s\n' "vllm_scheduler_policies.simple_policy_1.SimplePolicy1Scheduler"
       ;;
+    primal_lp_dry_run)
+      printf '%s\n' "vllm_scheduler_policies.primal_lp_dry_run.PrimalLPDryRunScheduler"
+      ;;
     later_policy_2)
       printf '%s\n' "vllm_scheduler_policies.later_policy_2.LaterPolicy2Scheduler"
       ;;
@@ -49,7 +52,7 @@ phase8_scheduler_class() {
       ;;
     *)
       echo "ERROR: unknown scheduler '${scheduler}'" >&2
-      echo "Known schedulers: default, passthrough, simple_policy_1, later_policy_2, latex_policy_v1" >&2
+      echo "Known schedulers: default, passthrough, simple_policy_1, primal_lp_dry_run, later_policy_2, latex_policy_v1" >&2
       return 2
       ;;
   esac

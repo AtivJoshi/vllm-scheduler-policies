@@ -22,7 +22,7 @@ Usage:
   scripts/serve.sh [options] [-- extra vllm serve args...]
 
 Options:
-  --scheduler NAME              default | passthrough | simple_policy_1 | later_policy_2 | latex_policy_v1
+  --scheduler NAME              default | passthrough | simple_policy_1 | primal_lp_dry_run | later_policy_2 | latex_policy_v1
   --model NAME                  Hugging Face model name/path
   --served-model-name NAME      OpenAI API model alias
   --host HOST                   default: 127.0.0.1
