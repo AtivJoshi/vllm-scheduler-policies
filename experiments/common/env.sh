@@ -25,10 +25,10 @@ fi
 # has caused remote Unity session instability in this project.
 source "${UNITY_ENV_SCRIPT}"
 
-VLLM_SCHED_VENV="${VLLM_SCHED_VENV:-/home/atjoshi_umass_edu/vllm-sched/.venv}"
-export VLLM_SCHED_VENV
+SCHED_VENV="${SCHED_VENV:-/home/atjoshi_umass_edu/vllm-sched/.venv}"
+export SCHED_VENV
 
-PYTHON_BIN="${PYTHON_BIN:-${VLLM_SCHED_VENV}/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-${SCHED_VENV}/bin/python}"
 export PYTHON_BIN
 
 if [ ! -x "${PYTHON_BIN}" ]; then
