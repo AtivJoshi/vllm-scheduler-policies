@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Analyze scheduler JSONL artifacts for Phase 13 experiments.
+"""Analyze scheduler JSONL artifacts for scheduler experiments.
 
 This script is intentionally dependency-free. It reads the JSONL file produced
 by SCHEDULER_POLICIES_ITER_LOG and writes compact text/JSON summaries.
 
-It is strict about the LP timing caveat: unless a dedicated LP-specific timing
-field is present in the records, it reports scheduler_wall_time_ms as the timing
-field used for dry-run overhead comparisons.
+It reports explicit Phase 14 scheduler and LP timing attribution when present,
+while remaining compatible with older logs that only have scheduler wall time.
 """
 
 from __future__ import annotations
@@ -20,12 +19,19 @@ from pathlib import Path
 from typing import Any
 
 
-LP_TIMING_CANDIDATE_FIELDS = (
-    "lp_wall_time_ms",
-    "lp_solver_wall_time_ms",
-    "lp_planning_wall_time_ms",
-    "lp_dry_run_wall_time_ms",
+LP_TIMING_FIELDS = (
+    "lp_snapshot_wall_time_ms",
+    "lp_weight_wall_time_ms",
+    "lp_relaxed_lp_build_wall_time_ms",
+    "lp_highs_solve_wall_time_ms",
+    "lp_relaxed_solution_parse_wall_time_ms",
+    "lp_extract_wall_time_ms",
+    "lp_plan_wall_time_ms",
+    "lp_summary_wall_time_ms",
+    "lp_log_prepare_wall_time_ms",
+    "lp_dry_run_total_wall_time_ms",
 )
+NATIVE_TIMING_FIELD = "native_schedule_wall_time_ms"
 
 
 def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -123,23 +129,21 @@ def analyze(path: Path) -> dict[str, Any]:
     scheduler_records = [r for r in records if r.get("event") == "scheduler_call"]
     lp_records = [r for r in records if r.get("event") == "lp_dry_run"]
 
-    wall_times = _numeric_values(scheduler_records, "scheduler_wall_time_ms")
-
-    lp_specific_timing_fields_present = [
+    lp_timing_fields_present = [
         field
-        for field in LP_TIMING_CANDIDATE_FIELDS
+        for field in LP_TIMING_FIELDS
         if any(field in record for record in lp_records)
     ]
+    native_timing_present = any(
+        NATIVE_TIMING_FIELD in record for record in scheduler_records
+    )
+    phase14_timing_fields_present = list(lp_timing_fields_present)
+    if native_timing_present:
+        phase14_timing_fields_present.append(NATIVE_TIMING_FIELD)
 
-    lp_specific_timing_available = bool(lp_specific_timing_fields_present)
-    if lp_specific_timing_available:
-        lp_timing_field = lp_specific_timing_fields_present[0]
-        lp_timing_stats = _summary_stats(_numeric_values(lp_records, lp_timing_field))
-        overhead_metric_used = lp_timing_field
-    else:
-        lp_timing_field = None
-        lp_timing_stats = None
-        overhead_metric_used = "scheduler_wall_time_ms"
+    lp_specific_timing_available = bool(lp_timing_fields_present) or any(
+        record.get("lp_timing_available") is True for record in lp_records
+    )
 
     scheduler_classes = sorted(
         {
@@ -167,7 +171,12 @@ def analyze(path: Path) -> dict[str, Any]:
         "num_scheduler_error_records": sum(
             1 for record in scheduler_records if record.get("ok") is not True
         ),
-        "scheduler_wall_time_ms": _summary_stats(wall_times),
+        "scheduler_wall_time_ms": _summary_stats(
+            _numeric_values(scheduler_records, "scheduler_wall_time_ms")
+        ),
+        NATIVE_TIMING_FIELD: _summary_stats(
+            _numeric_values(scheduler_records, NATIVE_TIMING_FIELD)
+        ),
         "total_scheduled_tokens": _sum_numeric(
             scheduler_records, "num_scheduled_tokens"
         ),
@@ -176,19 +185,25 @@ def analyze(path: Path) -> dict[str, Any]:
             scheduler_records, "num_scheduled_requests"
         ),
         "lp_specific_timing_available": lp_specific_timing_available,
-        "lp_specific_timing_fields_present": lp_specific_timing_fields_present,
-        "lp_timing_field": lp_timing_field,
-        "lp_timing_stats": lp_timing_stats,
-        "overhead_metric_used": overhead_metric_used,
+        "lp_specific_timing_fields_present": lp_timing_fields_present,
+        "phase14_timing_fields_present": phase14_timing_fields_present,
+        "overhead_metric_used": (
+            "lp_dry_run_total_wall_time_ms"
+            if "lp_dry_run_total_wall_time_ms" in lp_timing_fields_present
+            else "scheduler_wall_time_ms"
+        ),
         "measurement_caveat": (
-            "LP-specific timing field found; use lp_timing_field for isolated "
-            "LP timing if the field semantics are verified."
+            "Phase 14 timing fields are available; scheduler_wall_time_ms still "
+            "measures the full scheduler path including native scheduling."
             if lp_specific_timing_available
-            else "No LP-specific timing field found; overhead comparisons use "
-            "scheduler_wall_time_ms and therefore measure total dry-run scheduler "
-            "overhead, not isolated LP solver time."
+            else "No LP-specific timing fields are present; scheduler_wall_time_ms "
+            "measures total dry-run scheduler overhead and does not isolate LP "
+            "solver time."
         ),
     }
+
+    for field in LP_TIMING_FIELDS:
+        summary[field] = _summary_stats(_numeric_values(lp_records, field))
 
     if lp_records:
         summary.update(
@@ -255,10 +270,24 @@ def format_text(summary: dict[str, Any]) -> str:
         f"total_preemptions={_format_value(summary['total_preemptions'])}",
         "lp_specific_timing_available="
         f"{summary['lp_specific_timing_available']}",
-        f"lp_timing_field={summary['lp_timing_field']}",
+        "phase14_timing_fields_present="
+        f"{json.dumps(summary['phase14_timing_fields_present'])}",
         f"overhead_metric_used={summary['overhead_metric_used']}",
         f"measurement_caveat={summary['measurement_caveat']}",
     ]
+
+    for field in (NATIVE_TIMING_FIELD, *LP_TIMING_FIELDS):
+        stats = summary[field]
+        if stats["count"] == 0:
+            continue
+        lines.append(
+            f"{field}: count={_format_value(stats['count'])}, "
+            f"mean={_format_value(stats['mean'])}, "
+            f"median={_format_value(stats['median'])}, "
+            f"p95={_format_value(stats['p95'])}, "
+            f"min={_format_value(stats['min'])}, "
+            f"max={_format_value(stats['max'])}"
+        )
 
     if summary.get("num_lp_dry_run_records", 0) > 0:
         lines.extend(
