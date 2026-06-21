@@ -15,7 +15,10 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.request import RequestStatus
 
 from vllm_scheduler_policies.instrumentation import InstrumentedSchedulerMixin
-from vllm_scheduler_policies.primal_lp.solver import solve_lp_relaxation
+from vllm_scheduler_policies.primal_lp.solver import (
+    solve_lp_relaxation,  # noqa: F401 - retained for module compatibility
+    solve_lp_relaxation_timed,
+)
 from vllm_scheduler_policies.primal_lp.types import (
     LPActionPlan,
     LPCapacities,
@@ -165,30 +168,60 @@ class PrimalLPDryRunScheduler(InstrumentedSchedulerMixin, Scheduler):
     """Instrumented scheduler that logs a dry-run primal LP plan."""
 
     def _delegate_default_schedule(self):  # noqa: ANN201 - vLLM return type
-        return Scheduler.schedule(self)
+        native_start = time.perf_counter()
+        try:
+            return Scheduler.schedule(self)
+        finally:
+            self._instrumentation_add_scheduler_call_fields(
+                native_schedule_wall_time_ms=(
+                    time.perf_counter() - native_start
+                )
+                * 1000.0
+            )
 
     def _schedule_impl(self):  # noqa: ANN201 - keep exact vLLM scheduler return
+        dry_run_start = time.perf_counter()
+        timings: dict[str, float] = {}
         try:
-            snapshot, unsupported_reason, lp_num_requests = (
-                self._collect_lp_state_snapshot()
-            )
+            snapshot_start = time.perf_counter()
+            try:
+                snapshot, unsupported_reason, lp_num_requests = (
+                    self._collect_lp_state_snapshot()
+                )
+            finally:
+                timings["lp_snapshot_wall_time_ms"] = (
+                    time.perf_counter() - snapshot_start
+                ) * 1000.0
             if unsupported_reason is not None:
                 self._write_lp_dry_run_record(
+                    timings=timings,
+                    dry_run_start=dry_run_start,
                     lp_num_requests=lp_num_requests,
                     lp_fallback=True,
                     lp_unsupported_reason=unsupported_reason,
                 )
             else:
-                plan = self._run_lp_dry_run(snapshot)
+                plan = self._run_lp_dry_run(snapshot, timings)
+                summary_start = time.perf_counter()
+                try:
+                    summary = _summarize_lp_plan(plan)
+                finally:
+                    timings["lp_summary_wall_time_ms"] = (
+                        time.perf_counter() - summary_start
+                    ) * 1000.0
                 self._write_lp_dry_run_record(
+                    timings=timings,
+                    dry_run_start=dry_run_start,
                     lp_num_requests=len(snapshot.requests),
                     lp_fallback=not plan.solver_success,
                     lp_unsupported_reason=None,
                     kv_block_read_error=snapshot.kv_block_read_error,
-                    **_summarize_lp_plan(plan),
+                    **summary,
                 )
         except Exception as exc:
             self._write_lp_dry_run_record(
+                timings=timings,
+                dry_run_start=dry_run_start,
                 lp_fallback=True,
                 lp_unsupported_reason=None,
                 lp_dry_run_error_type=type(exc).__name__,
@@ -251,19 +284,36 @@ class PrimalLPDryRunScheduler(InstrumentedSchedulerMixin, Scheduler):
             lp_num_requests,
         )
 
-    def _run_lp_dry_run(self, snapshot: LPStateSnapshot) -> LPActionPlan:
+    def _run_lp_dry_run(
+        self, snapshot: LPStateSnapshot, timings: dict[str, float]
+    ) -> LPActionPlan:
         if not snapshot.requests:
-            return LPActionPlan.empty_for(
+            plan_start = time.perf_counter()
+            plan = LPActionPlan.empty_for(
                 [],
                 solver_success=True,
                 solver_status=0,
                 solver_message="no_requests",
             )
-        weights = compute_default_like_weights(
-            snapshot.requests,
-            current_time=time.time(),
+            timings["lp_plan_wall_time_ms"] = (
+                time.perf_counter() - plan_start
+            ) * 1000.0
+            return plan
+        weight_start = time.perf_counter()
+        try:
+            weights = compute_default_like_weights(
+                snapshot.requests,
+                current_time=time.time(),
+            )
+        finally:
+            timings["lp_weight_wall_time_ms"] = (
+                time.perf_counter() - weight_start
+            ) * 1000.0
+        plan, plan_timings = solve_lp_relaxation_timed(
+            snapshot.requests, snapshot.capacities, weights
         )
-        return solve_lp_relaxation(snapshot.requests, snapshot.capacities, weights)
+        timings.update(plan_timings)
+        return plan
 
     def _get_num_free_kv_blocks(self) -> float:
         return float(self.kv_cache_manager.block_pool.get_num_free_blocks())
@@ -275,7 +325,14 @@ class PrimalLPDryRunScheduler(InstrumentedSchedulerMixin, Scheduler):
         except Exception:
             return 0.0, True
 
-    def _write_lp_dry_run_record(self, **fields: Any) -> None:
+    def _write_lp_dry_run_record(
+        self,
+        *,
+        timings: dict[str, float],
+        dry_run_start: float,
+        **fields: Any,
+    ) -> None:
+        log_prepare_start = time.perf_counter()
         call_index = getattr(self, "_vllm_sched_instr_call_index", None)
         if call_index is not None:
             call_index -= 1
@@ -323,4 +380,12 @@ class PrimalLPDryRunScheduler(InstrumentedSchedulerMixin, Scheduler):
             "kv_block_read_error": fields.pop("kv_block_read_error", False),
         }
         record.update(fields)
+        record.update(timings)
+        record["lp_timing_available"] = True
+        record["lp_log_prepare_wall_time_ms"] = (
+            time.perf_counter() - log_prepare_start
+        ) * 1000.0
+        record["lp_dry_run_total_wall_time_ms"] = (
+            time.perf_counter() - dry_run_start
+        ) * 1000.0
         self._instrumentation_write(record)

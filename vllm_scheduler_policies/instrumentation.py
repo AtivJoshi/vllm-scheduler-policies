@@ -91,6 +91,14 @@ class InstrumentedSchedulerMixin:
             # Instrumentation must never break serving.
             pass
 
+    def _instrumentation_add_scheduler_call_fields(self, **fields: Any) -> None:
+        """Attach fields to the scheduler_call record for the current call."""
+        try:
+            self._vllm_sched_instr_scheduler_call_fields.update(fields)
+        except Exception:
+            # Instrumentation must never break serving.
+            pass
+
     def schedule(self):  # noqa: ANN201 - keep exact vLLM scheduler signature
         self._instrumentation_init_once()
 
@@ -106,6 +114,7 @@ class InstrumentedSchedulerMixin:
         output = None
         error_type = None
         error_message = None
+        self._vllm_sched_instr_scheduler_call_fields = {}
 
         try:
             output = self._schedule_impl()
@@ -158,6 +167,7 @@ class InstrumentedSchedulerMixin:
                 record["error_type"] = error_type
                 record["error_message"] = error_message
 
+            record.update(self._vllm_sched_instr_scheduler_call_fields)
             self._instrumentation_write(record)
 
     def _schedule_impl(self):  # noqa: ANN201 - keep exact vLLM scheduler return

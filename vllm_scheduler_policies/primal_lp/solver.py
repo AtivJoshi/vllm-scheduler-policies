@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -39,11 +40,12 @@ def _build_variable_index(requests: list[LPRequestSnapshot]) -> list[_VariableIn
     ]
 
 
-def _solve_relaxed_lp(
+def _solve_relaxed_lp_timed(
     requests: list[LPRequestSnapshot],
     capacities: LPCapacities,
     weights: LPUtilityWeights,
-) -> RelaxedLPSolution:
+) -> tuple[RelaxedLPSolution, dict[str, float]]:
+    build_start = time.perf_counter()
     var_index = _build_variable_index(requests)
     num_vars = 4 * len(requests)
 
@@ -104,41 +106,63 @@ def _solve_relaxed_lp(
         a_ub.append(prefill_coupling)
         b_ub.append(0.0)
 
+    a_ub_array = np.array(a_ub, dtype=float) if a_ub else None
+    b_ub_array = np.array(b_ub, dtype=float) if b_ub else None
+    build_wall_time_ms = (time.perf_counter() - build_start) * 1000.0
+
+    solve_start = time.perf_counter()
     result = linprog(
         c,
-        A_ub=np.array(a_ub, dtype=float) if a_ub else None,
-        b_ub=np.array(b_ub, dtype=float) if b_ub else None,
+        A_ub=a_ub_array,
+        b_ub=b_ub_array,
         bounds=bounds,
         method="highs",
     )
+    solve_wall_time_ms = (time.perf_counter() - solve_start) * 1000.0
 
+    parse_start = time.perf_counter()
     if not result.success:
-        return RelaxedLPSolution(
+        solution = RelaxedLPSolution(
             success=False,
             status=int(result.status),
             message=str(result.message),
         )
+    else:
+        prefill_tokens = {}
+        decode = {}
+        preempt = {}
+        prefill_admission = {}
+        for index in var_index:
+            prefill_tokens[index.request_id] = float(result.x[index.x])
+            decode[index.request_id] = float(result.x[index.y])
+            preempt[index.request_id] = float(result.x[index.z])
+            prefill_admission[index.request_id] = float(result.x[index.admission])
 
-    prefill_tokens = {}
-    decode = {}
-    preempt = {}
-    prefill_admission = {}
-    for index in var_index:
-        prefill_tokens[index.request_id] = float(result.x[index.x])
-        decode[index.request_id] = float(result.x[index.y])
-        preempt[index.request_id] = float(result.x[index.z])
-        prefill_admission[index.request_id] = float(result.x[index.admission])
+        solution = RelaxedLPSolution(
+            success=True,
+            status=int(result.status),
+            message=str(result.message),
+            objective_value=float(-result.fun),
+            prefill_tokens=prefill_tokens,
+            decode=decode,
+            preempt=preempt,
+            prefill_admission=prefill_admission,
+        )
+    parse_wall_time_ms = (time.perf_counter() - parse_start) * 1000.0
+    return solution, {
+        "lp_relaxed_lp_build_wall_time_ms": build_wall_time_ms,
+        "lp_highs_solve_wall_time_ms": solve_wall_time_ms,
+        "lp_relaxed_solution_parse_wall_time_ms": parse_wall_time_ms,
+    }
 
-    return RelaxedLPSolution(
-        success=True,
-        status=int(result.status),
-        message=str(result.message),
-        objective_value=float(-result.fun),
-        prefill_tokens=prefill_tokens,
-        decode=decode,
-        preempt=preempt,
-        prefill_admission=prefill_admission,
-    )
+
+def _solve_relaxed_lp(
+    requests: list[LPRequestSnapshot],
+    capacities: LPCapacities,
+    weights: LPUtilityWeights,
+) -> RelaxedLPSolution:
+    solution, _ = _solve_relaxed_lp_timed(requests, capacities, weights)
+    return solution
 
 
 def solve_lp_relaxation(
@@ -156,3 +180,32 @@ def solve_lp_relaxation(
         relaxed_solution,
         tol=tol,
     )
+
+
+def solve_lp_relaxation_timed(
+    requests: list[LPRequestSnapshot],
+    capacities: LPCapacities,
+    weights: LPUtilityWeights,
+    *,
+    tol: float = 1.0e-6,
+) -> tuple[LPActionPlan, dict[str, float]]:
+    """Solve and extract an action plan with scheduler attribution timings."""
+    plan_start = time.perf_counter()
+    relaxed_solution, timings = _solve_relaxed_lp_timed(
+        requests, capacities, weights
+    )
+
+    extract_start = time.perf_counter()
+    plan = extract_fractionals(
+        requests,
+        capacities,
+        relaxed_solution,
+        tol=tol,
+    )
+    timings["lp_extract_wall_time_ms"] = (
+        time.perf_counter() - extract_start
+    ) * 1000.0
+    timings["lp_plan_wall_time_ms"] = (
+        time.perf_counter() - plan_start
+    ) * 1000.0
+    return plan, timings

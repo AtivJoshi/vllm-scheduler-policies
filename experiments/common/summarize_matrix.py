@@ -41,6 +41,20 @@ BENCH_NUMERIC_KEYS = (
 
 COMPARISON_BASELINE = "simple_policy_1"
 COMPARISON_TREATMENT = "primal_lp_dry_run"
+TIMING_FIELDS = (
+    "scheduler_wall_time_ms",
+    "native_schedule_wall_time_ms",
+    "lp_dry_run_total_wall_time_ms",
+    "lp_snapshot_wall_time_ms",
+    "lp_weight_wall_time_ms",
+    "lp_relaxed_lp_build_wall_time_ms",
+    "lp_highs_solve_wall_time_ms",
+    "lp_relaxed_solution_parse_wall_time_ms",
+    "lp_extract_wall_time_ms",
+    "lp_plan_wall_time_ms",
+    "lp_summary_wall_time_ms",
+    "lp_log_prepare_wall_time_ms",
+)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -172,10 +186,26 @@ def _metric_stats(cells: list[dict[str, Any]], key: str) -> dict[str, float | No
     }
 
 
+def _timing_cell_fields(analysis: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for timing_field in TIMING_FIELDS:
+        stats = analysis.get(timing_field, {})
+        if not isinstance(stats, dict):
+            stats = {}
+        mean = _float_or_none(stats.get("mean"))
+        count = _float_or_none(stats.get("count"))
+        fields[f"{timing_field}_mean"] = mean
+        fields[f"{timing_field}_p95"] = _float_or_none(stats.get("p95"))
+        fields[f"{timing_field}_sum"] = (
+            mean * count if mean is not None and count is not None else None
+        )
+    return fields
+
+
 def _metric_summary_for_scheduler(cells: list[dict[str, Any]]) -> dict[str, Any]:
     failed_requests = [cell.get("failed_requests") for cell in cells]
 
-    return {
+    summary = {
         "num_cells": len(cells),
         "seeds": [cell["seed"] for cell in cells],
         "all_scheduler_calls_ok": all(
@@ -204,20 +234,11 @@ def _metric_summary_for_scheduler(cells: list[dict[str, Any]]) -> dict[str, Any]
         "mean_e2el_ms": _metric_stats(cells, "mean_e2el_ms"),
         "median_e2el_ms": _metric_stats(cells, "median_e2el_ms"),
         "p99_e2el_ms": _metric_stats(cells, "p99_e2el_ms"),
-        "scheduler_wall_time_ms_mean": _metric_stats(
-            cells, "scheduler_wall_time_ms_mean"
-        ),
         "scheduler_wall_time_ms_median": _metric_stats(
             cells, "scheduler_wall_time_ms_median"
         ),
-        "scheduler_wall_time_ms_p95": _metric_stats(
-            cells, "scheduler_wall_time_ms_p95"
-        ),
         "scheduler_wall_time_ms_max": _metric_stats(
             cells, "scheduler_wall_time_ms_max"
-        ),
-        "scheduler_wall_time_ms_sum": _metric_stats(
-            cells, "scheduler_wall_time_ms_sum"
         ),
         "num_scheduler_call_records": _metric_stats(
             cells, "num_scheduler_call_records"
@@ -232,6 +253,11 @@ def _metric_summary_for_scheduler(cells: list[dict[str, Any]]) -> dict[str, Any]
             {str(cell.get("overhead_metric_used")) for cell in cells}
         ),
     }
+    for timing_field in TIMING_FIELDS:
+        for stat in ("mean", "p95", "sum"):
+            key = f"{timing_field}_{stat}"
+            summary[key] = _metric_stats(cells, key)
+    return summary
 
 
 def _comparison_from_groups(grouped: dict[str, Any]) -> dict[str, Any]:
@@ -243,18 +269,6 @@ def _comparison_from_groups(grouped: dict[str, Any]) -> dict[str, Any]:
     comparison: dict[str, Any] = {}
 
     metric_paths = {
-        "scheduler_wall_time_ms_mean": (
-            baseline["scheduler_wall_time_ms_mean"]["mean"],
-            treatment["scheduler_wall_time_ms_mean"]["mean"],
-        ),
-        "scheduler_wall_time_ms_p95": (
-            baseline["scheduler_wall_time_ms_p95"]["mean"],
-            treatment["scheduler_wall_time_ms_p95"]["mean"],
-        ),
-        "scheduler_wall_time_ms_sum": (
-            baseline["scheduler_wall_time_ms_sum"]["mean"],
-            treatment["scheduler_wall_time_ms_sum"]["mean"],
-        ),
         "mean_tpot_ms": (
             baseline["mean_tpot_ms"]["mean"],
             treatment["mean_tpot_ms"]["mean"],
@@ -284,6 +298,13 @@ def _comparison_from_groups(grouped: dict[str, Any]) -> dict[str, Any]:
             treatment["total_token_throughput_tok_s"]["mean"],
         ),
     }
+    for timing_field in TIMING_FIELDS:
+        for stat in ("mean", "p95", "sum"):
+            key = f"{timing_field}_{stat}"
+            metric_paths[key] = (
+                baseline[key]["mean"],
+                treatment[key]["mean"],
+            )
 
     for metric, (baseline_value, treatment_value) in metric_paths.items():
         baseline_f = _float_or_none(baseline_value)
@@ -317,15 +338,9 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
         analysis = _load_json(analysis_path)
         scheduler, seed = _parse_cell_name(cell_dir.name)
         wall = analysis.get("scheduler_wall_time_ms", {})
+        if not isinstance(wall, dict):
+            wall = {}
         bench = _bench_metrics(cell_dir)
-
-        wall_mean = _float_or_none(wall.get("mean"))
-        scheduler_calls = _float_or_none(analysis.get("num_scheduler_call_records"))
-        wall_sum = (
-            wall_mean * scheduler_calls
-            if wall_mean is not None and scheduler_calls is not None
-            else None
-        )
 
         cell = {
             "cell": cell_dir.name,
@@ -358,15 +373,15 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
             ),
             "num_lp_dry_run_records": analysis.get("num_lp_dry_run_records"),
             "all_scheduler_calls_ok": analysis.get("all_scheduler_calls_ok"),
-            "scheduler_wall_time_ms_mean": wall.get("mean"),
             "scheduler_wall_time_ms_median": wall.get("median"),
-            "scheduler_wall_time_ms_p95": wall.get("p95"),
             "scheduler_wall_time_ms_max": wall.get("max"),
-            "scheduler_wall_time_ms_sum": wall_sum,
             "total_scheduled_tokens": analysis.get("total_scheduled_tokens"),
             "total_preemptions": analysis.get("total_preemptions"),
             "lp_specific_timing_available": analysis.get(
                 "lp_specific_timing_available"
+            ),
+            "phase14_timing_fields_present": analysis.get(
+                "phase14_timing_fields_present", []
             ),
             "overhead_metric_used": analysis.get("overhead_metric_used"),
             "lp_fallback_counts": analysis.get("lp_fallback_counts"),
@@ -376,6 +391,7 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
             "lp_solver_success_counts": analysis.get("lp_solver_success_counts"),
             "lp_error_type_counts": analysis.get("lp_error_type_counts"),
         }
+        cell.update(_timing_cell_fields(analysis))
         cells.append(cell)
 
     by_scheduler_cells: dict[str, list[dict[str, Any]]] = {}
@@ -396,9 +412,9 @@ def summarize(matrix_root: Path) -> dict[str, Any]:
         "by_scheduler": grouped,
         "comparison": comparison,
         "measurement_caveat": (
-            "Unless lp_specific_timing_available is true, comparisons use "
-            "scheduler_wall_time_ms and measure total scheduler overhead, not "
-            "isolated LP solver time."
+            "Phase 14 timing fields are reported when present. Missing timing "
+            "values remain null and are excluded from grouped statistics and "
+            "treatment-versus-baseline comparisons."
         ),
     }
 
@@ -424,6 +440,7 @@ def format_text(summary: dict[str, Any]) -> str:
             "cell,scheduler,seed,success,failed,req_throughput,"
             "mean_ttft_ms,mean_tpot_ms,median_tpot_ms,p99_tpot_ms,"
             "wall_mean_ms,wall_p95_ms,wall_sum_ms,wall_max_ms,"
+            "native_mean_ms,lp_total_mean_ms,lp_highs_mean_ms,"
             "scheduler_calls,lp_records"
         ),
     ]
@@ -446,6 +463,9 @@ def format_text(summary: dict[str, Any]) -> str:
                     _format_float(cell["scheduler_wall_time_ms_p95"]),
                     _format_float(cell["scheduler_wall_time_ms_sum"]),
                     _format_float(cell["scheduler_wall_time_ms_max"]),
+                    _format_float(cell["native_schedule_wall_time_ms_mean"]),
+                    _format_float(cell["lp_dry_run_total_wall_time_ms_mean"]),
+                    _format_float(cell["lp_highs_solve_wall_time_ms_mean"]),
                     str(cell["num_scheduler_call_records"]),
                     str(cell["num_lp_dry_run_records"]),
                 ]
@@ -492,6 +512,16 @@ def format_text(summary: dict[str, Any]) -> str:
                 f"  overhead_metric_used={group['overhead_metric_used']}",
             ]
         )
+        for timing_field in TIMING_FIELDS[1:]:
+            lines.append(
+                f"  {timing_field}: "
+                "cell_mean_avg="
+                f"{_format_float(group[f'{timing_field}_mean']['mean'])}, "
+                "cell_p95_avg="
+                f"{_format_float(group[f'{timing_field}_p95']['mean'])}, "
+                "cell_sum_avg="
+                f"{_format_float(group[f'{timing_field}_sum']['mean'])}"
+            )
 
     lines.extend(["", "=== comparison ==="])
     for key, value in sorted(summary["comparison"].items()):
